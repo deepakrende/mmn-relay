@@ -1,4 +1,4 @@
-// MMN OTT MART relay — talks to the IPTV provider on behalf of the app.
+// MMN OTT MART relay â€” talks to the IPTV provider on behalf of the app.
 // Plain Node.js, no dependencies. Deploy on Railway: it auto-detects this file.
 import http from "node:http";
 
@@ -126,10 +126,13 @@ async function handleStream(req, res, requestUrl) {
   try {
     const headers = { "User-Agent": UA, Accept: "*/*" };
     if (req.headers.range) headers.Range = req.headers.range;
+    const controller = new AbortController();
+    req.once("aborted", () => controller.abort());
+    res.once("close", () => {
+      if (!res.writableEnded) controller.abort();
+    });
     // Follow redirects manually: IPTV providers often redirect to IP:port hosts that automatic following rejects.
     for (let hop = 0; hop < 5; hop++) {
-      const controller = new AbortController();
-      req.on("close", () => controller.abort());
       const result = await fetch(finalUrl, { headers, redirect: "manual", signal: controller.signal });
       const location = result.headers.get("location");
       if (result.status >= 300 && result.status < 400 && location) {
@@ -202,7 +205,7 @@ function livePage(streamUrl, title) {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>${title} — Live</title>
+<title>${title} â€” Live</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
   body { background: #060608; color: #f5f5f7; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
@@ -226,47 +229,72 @@ function livePage(streamUrl, title) {
   var player = null;
   var lastTime = 0;
   var stuckCount = 0;
+  var startedAt = 0;
+  var retryTimer = null;
+  var retryDelay = 8000;
+  var booting = false;
+  function scheduleReconnect() {
+    if (retryTimer) return;
+    retryTimer = setTimeout(function () {
+      retryTimer = null;
+      boot();
+    }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 30000);
+  }
   function boot() {
+    if (booting) return;
+    booting = true;
+    startedAt = Date.now();
+    lastTime = 0;
+    stuckCount = 0;
     if (player) { try { player.destroy(); } catch (e) {} player = null; }
     if (window.mpegts && mpegts.isSupported()) {
       player = mpegts.createPlayer(
         { type: "mpegts", isLive: true, url: src },
         {
           enableStashBuffer: true,
-          stashInitialSize: 384 * 1024,
-          liveBufferLatencyChasing: true,
-          liveBufferLatencyMaxLatency: 6,
-          liveBufferLatencyMinRemain: 2,
+          stashInitialSize: 1024 * 1024,
+          liveBufferLatencyChasing: false,
           autoCleanupSourceBuffer: true,
-          fixAudioTimestampGap: true
+          autoCleanupMaxBackwardDuration: 120,
+          autoCleanupMinBackwardDuration: 60,
+          fixAudioTimestampGap: true,
+          lazyLoad: false
         }
       );
       player.attachMediaElement(video);
       player.load();
       player.play().catch(function () {});
+      booting = false;
       player.on(mpegts.Events.ERROR, function () {
-        setTimeout(boot, 4000);
+        scheduleReconnect();
       });
     } else {
       video.src = src;
       video.play().catch(function () {});
+      booting = false;
     }
   }
-  // Never stay paused: if the video pauses or freezes, resume it.
+  // Resume accidental pauses without rebuilding a healthy buffered stream.
   video.addEventListener("pause", function () {
-    if (!video.ended) setTimeout(function () { video.play().catch(function () {}); }, 500);
+    if (!video.ended) setTimeout(function () { video.play().catch(function () {}); }, 1000);
   });
-  // Watchdog: if playback time stops advancing for 8s, rebuild the player.
+  video.addEventListener("playing", function () {
+    retryDelay = 8000;
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  });
+  // Allow a generous startup/buffering window. Reconnect only after a real 30s freeze.
   setInterval(function () {
     if (video.paused) { video.play().catch(function () {}); return; }
+    if (Date.now() - startedAt < 45000) return;
     if (video.currentTime === lastTime) {
       stuckCount++;
-      if (stuckCount >= 4) { stuckCount = 0; boot(); }
+      if (stuckCount >= 6) { stuckCount = 0; scheduleReconnect(); }
     } else {
       stuckCount = 0;
       lastTime = video.currentTime;
     }
-  }, 2000);
+  }, 5000);
   boot();
   document.addEventListener("click", function () { video.muted = false; }, { once: true });
 </script>
