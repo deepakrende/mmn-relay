@@ -9,8 +9,8 @@ const UA = "VLC/3.0.20 LibVLC/3.0.20";
 const LIVE_SERVER = process.env.LIVE_SERVER || "http://myott.to:80";
 const LIVE_USER = process.env.LIVE_USER || "8506419545";
 const LIVE_PASS = process.env.LIVE_PASS || "9852600110";
-const LIVE_CHANNEL = process.env.LIVE_CHANNEL || "IND: Star Sports 2 Hindi HD";
-const LIVE_TITLE = process.env.LIVE_TITLE || "Star Sports 2 Hindi HD";
+const LIVE_CHANNEL = process.env.LIVE_CHANNEL || "IND: TG: Maa HD";
+const LIVE_TITLE = process.env.LIVE_TITLE || "Maa HD Live";
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -126,14 +126,9 @@ async function handleStream(req, res, requestUrl) {
   try {
     const headers = { "User-Agent": UA, Accept: "*/*" };
     if (req.headers.range) headers.Range = req.headers.range;
-    const controller = new AbortController();
-    req.once("aborted", () => controller.abort());
-    res.once("close", () => {
-      if (!res.writableEnded) controller.abort();
-    });
     // Follow redirects manually: IPTV providers often redirect to IP:port hosts that automatic following rejects.
     for (let hop = 0; hop < 5; hop++) {
-      const result = await fetch(finalUrl, { headers, redirect: "manual", signal: controller.signal });
+      const result = await fetch(finalUrl, { headers, redirect: "manual" });
       const location = result.headers.get("location");
       if (result.status >= 300 && result.status < 400 && location) {
         const next = resolveUrl(finalUrl, location);
@@ -248,7 +243,8 @@ function livePage(streamUrl, title) {
     lastTime = 0;
     stuckCount = 0;
     if (player) { try { player.destroy(); } catch (e) {} player = null; }
-    if (window.mpegts && mpegts.isSupported()) {
+    var mpegtsFeatures = window.mpegts && typeof mpegts.getFeatureList === "function" ? mpegts.getFeatureList() : null;
+    if (window.mpegts && mpegtsFeatures && mpegtsFeatures.mseLivePlayback) {
       player = mpegts.createPlayer(
         { type: "mpegts", isLive: true, url: src },
         {
