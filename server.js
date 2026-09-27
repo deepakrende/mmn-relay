@@ -11,6 +11,8 @@ const LIVE_USER = process.env.LIVE_USER || "8506419545";
 const LIVE_PASS = process.env.LIVE_PASS || "9852600110";
 const LIVE_CHANNEL = process.env.LIVE_CHANNEL || "IND: TG: Maa HD";
 const LIVE_TITLE = process.env.LIVE_TITLE || "Maa HD Live";
+const VIEWER_TTL_MS = 45_000;
+const viewers = new Map();
 
 const cors = {
   "access-control-allow-origin": "*",
@@ -22,6 +24,20 @@ function sendJson(res, value, status = 200) {
   const body = JSON.stringify(value);
   res.writeHead(status, { ...cors, "content-type": "application/json", "cache-control": "no-store" });
   res.end(body);
+}
+
+function activeViewerCount() {
+  const cutoff = Date.now() - VIEWER_TTL_MS;
+  for (const [id, seenAt] of viewers) {
+    if (seenAt < cutoff) viewers.delete(id);
+  }
+  return viewers.size;
+}
+
+function handleViewerHeartbeat(res, requestUrl) {
+  const id = String(requestUrl.searchParams.get("id") || "").slice(0, 100);
+  if (id) viewers.set(id, Date.now());
+  return sendJson(res, { count: activeViewerCount() });
 }
 
 function resolveUrl(base, value) {
@@ -203,24 +219,44 @@ function livePage(streamUrl, title) {
 <title>${title} â€” Live</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
-  body { background: #060608; color: #f5f5f7; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; min-height: 100vh; display: flex; flex-direction: column; }
-  header { display: flex; align-items: center; gap: 10px; padding: 14px 20px; }
+  html, body { width: 100%; height: 100%; overflow: hidden; }
+  body { background: #000; color: #f5f5f7; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { position: fixed; z-index: 2; inset: 0 0 auto; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) 38px max(18px, env(safe-area-inset-left)); background: linear-gradient(to bottom, rgba(0,0,0,.78), transparent); pointer-events: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #e11d48; box-shadow: 0 0 10px #e11d48; animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { opacity: .4; } }
   .live-tag { font-size: 12px; font-weight: 700; letter-spacing: .14em; color: #e11d48; }
-  h1 { font-size: 16px; font-weight: 600; }
-  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 0 16px 24px; }
-  .stage { width: 100%; max-width: 1280px; aspect-ratio: 16 / 9; background: #000; border-radius: 12px; overflow: hidden; }
+  h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(14px, 2vw, 20px); font-weight: 650; }
+  .viewers { display: inline-flex; align-items: center; gap: 7px; min-width: 72px; justify-content: flex-end; font-size: 13px; font-weight: 650; color: rgba(255,255,255,.92); }
+  .viewers svg { width: 18px; height: 18px; flex: none; }
+  main, .stage { width: 100%; height: 100%; }
+  .stage { position: relative; background: #000; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
+  @media (max-width: 480px) {
+    header { gap: 8px; padding-bottom: 30px; }
+    .live-tag { font-size: 11px; }
+    .viewers { min-width: 58px; font-size: 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
 </style>
 </head>
 <body>
-<header><span class="dot"></span><span class="live-tag">LIVE</span><h1>${title}</h1></header>
+<header><span class="dot"></span><span class="live-tag">LIVE</span><h1>${title}</h1><span class="viewers" aria-label="People watching"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span id="viewer-count">1</span></span></header>
 <main><div class="stage"><video id="v" controls autoplay muted playsinline></video></div></main>
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js"></script>
 <script>
   var src = ${JSON.stringify(streamUrl)};
   var video = document.getElementById("v");
+  var viewerCount = document.getElementById("viewer-count");
+  var viewerId = sessionStorage.getItem("live-viewer-id") || (Date.now().toString(36) + Math.random().toString(36).slice(2));
+  sessionStorage.setItem("live-viewer-id", viewerId);
+  function heartbeat() {
+    fetch("/api/public/viewers?id=" + encodeURIComponent(viewerId), { method: "POST", cache: "no-store" })
+      .then(function (response) { return response.json(); })
+      .then(function (data) { viewerCount.textContent = String(data.count || 1); })
+      .catch(function () {});
+  }
+  heartbeat();
+  setInterval(heartbeat, 15000);
   var player = null;
   var lastTime = 0;
   var stuckCount = 0;
@@ -316,6 +352,7 @@ const server = http.createServer(async (req, res) => {
   const requestUrl = new URL(req.url, `http://${req.headers.host || "localhost"}`);
   if (req.method === "OPTIONS") { res.writeHead(204, cors); return res.end(); }
   if ((requestUrl.pathname === "/" || requestUrl.pathname === "/live") && req.method === "GET") return handleLive(req, res);
+  if (requestUrl.pathname === "/api/public/viewers" && req.method === "POST") return handleViewerHeartbeat(res, requestUrl);
   if (requestUrl.pathname === "/health") {
     res.writeHead(200, { ...cors, "content-type": "text/plain" }); return res.end("MMN relay is running");
   }
