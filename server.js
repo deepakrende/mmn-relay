@@ -270,6 +270,13 @@ function livePage(streamUrl, title) {
       event.preventDefault();
     }
   });
+  function closePage() { document.documentElement.innerHTML = ""; document.body && (document.body.style.background = "#000"); try { window.location.replace("about:blank"); } catch (e) {} }
+  setInterval(function () {
+    var wide = (window.outerWidth - window.innerWidth > 160) || (window.outerHeight - window.innerHeight > 160);
+    var start = Date.now();
+    (function () { debugger; })();
+    if (wide || Date.now() - start > 120) closePage();
+  }, 800);
   var src = ${JSON.stringify(streamUrl)};
   var video = document.getElementById("v");
   var viewerCount = document.getElementById("viewer-count");
