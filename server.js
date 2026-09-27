@@ -132,12 +132,7 @@ async function handleXtreamPut(res, body) {
   }
 }
 
-async function handleStream(req, res, requestUrl) {
-  const target = requestUrl.searchParams.get("url");
-  if (!target || !isAllowedTarget(target)) {
-    res.writeHead(400, cors); return res.end("Invalid stream URL");
-  }
-
+async function streamUpstream(req, res, target) {
   let upstream; let finalUrl = target;
   try {
     const headers = { "User-Agent": UA, Accept: "*/*" };
@@ -197,6 +192,28 @@ async function handleStream(req, res, requestUrl) {
   res.end();
 }
 
+async function handleStream(req, res, requestUrl) {
+  const target = requestUrl.searchParams.get("url");
+  if (!target || !isAllowedTarget(target)) {
+    res.writeHead(400, cors); return res.end("Invalid stream URL");
+  }
+  return streamUpstream(req, res, target);
+}
+
+// Serves the live channel without exposing the provider URL or credentials to viewers.
+async function handleLiveStream(req, res) {
+  try {
+    const channel = await resolveLiveChannel();
+    return streamUpstream(req, res, `${LIVE_SERVER}/live/${encodeURIComponent(LIVE_USER)}/${encodeURIComponent(LIVE_PASS)}/${channel.streamId}.ts`);
+  } catch (error) {
+    console.error("[live] stream failed", error);
+    if (!res.headersSent) {
+      res.writeHead(502, { ...cors, "content-type": "text/plain", "cache-control": "no-store" });
+      res.end("Live channel is temporarily unavailable. Please try again in a moment.");
+    }
+  }
+}
+
 // --- 24/7 live channel page ---
 let liveCache = { at: 0, streamId: null, name: null };
 
@@ -244,6 +261,15 @@ function livePage(streamUrl, title) {
 <main><div class="stage"><video id="v" controls autoplay muted playsinline></video></div></main>
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js"></script>
 <script>
+  document.addEventListener("contextmenu", function (event) { event.preventDefault(); });
+  document.addEventListener("selectstart", function (event) { event.preventDefault(); });
+  document.addEventListener("copy", function (event) { event.preventDefault(); });
+  document.addEventListener("keydown", function (event) {
+    var key = (event.key || "").toLowerCase();
+    if (key === "f12" || ((event.ctrlKey || event.metaKey) && event.shiftKey && ["i", "j", "c"].includes(key)) || ((event.ctrlKey || event.metaKey) && ["u", "s"].includes(key))) {
+      event.preventDefault();
+    }
+  });
   var src = ${JSON.stringify(streamUrl)};
   var video = document.getElementById("v");
   var viewerCount = document.getElementById("viewer-count");
@@ -337,8 +363,7 @@ function livePage(streamUrl, title) {
 async function handleLive(_req, res) {
   try {
     const channel = await resolveLiveChannel();
-    const upstream = `${LIVE_SERVER}/live/${encodeURIComponent(LIVE_USER)}/${encodeURIComponent(LIVE_PASS)}/${channel.streamId}.ts`;
-    const html = livePage(proxyUrl(upstream), LIVE_TITLE);
+    const html = livePage("/live/stream", LIVE_TITLE);
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     res.end(html);
   } catch (error) {
@@ -356,6 +381,7 @@ const server = http.createServer(async (req, res) => {
   if (requestUrl.pathname === "/health") {
     res.writeHead(200, { ...cors, "content-type": "text/plain" }); return res.end("MMN relay is running");
   }
+  if (requestUrl.pathname === "/live/stream" && req.method === "GET") return handleLiveStream(req, res);
   if (requestUrl.pathname === "/api/public/stream" && req.method === "GET") return handleStream(req, res, requestUrl);
   if (requestUrl.pathname === "/api/public/xtream" && (req.method === "POST" || req.method === "PUT")) {
     let raw = "";
