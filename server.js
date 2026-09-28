@@ -201,29 +201,91 @@ async function handleStream(req, res, requestUrl) {
   return streamUpstream(req, res, target);
 }
 
-// Serves the live channel without exposing the provider URL or credentials to viewers.
-async function handleLiveStream(req, res) {
-  try {
-    const channel = await resolveLiveChannel();
-    return streamUpstream(req, res, `${LIVE_SERVER}/live/${encodeURIComponent(LIVE_USER)}/${encodeURIComponent(LIVE_PASS)}/${channel.streamId}.ts`);
-  } catch (error) {
-    console.error("[live] stream failed", error);
-    if (!res.headersSent) {
-      res.writeHead(502, { ...cors, "content-type": "text/plain", "cache-control": "no-store" });
-      res.end("Live channel is temporarily unavailable. Please try again in a moment.");
+// Fetches a URL, following redirects manually (providers often redirect to IP:port hosts).
+async function fetchFollow(url, signal) {
+  let current = url;
+  for (let hop = 0; hop < 5; hop++) {
+    const result = await fetch(current, { headers: { "User-Agent": UA, Accept: "*/*" }, redirect: "manual", signal });
+    const location = result.headers.get("location");
+    if (result.status >= 300 && result.status < 400 && location) {
+      const next = resolveUrl(current, location);
+      if (!isAllowedTarget(next)) throw new Error("Invalid redirect");
+      current = next;
+      continue;
     }
+    return result;
   }
+  throw new Error("Too many redirects");
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Serves the live channel without exposing the provider URL or credentials to viewers.
+// If the provider closes the upstream connection, this reconnects on its own and keeps
+// feeding the same response, so the viewer's player never has to restart.
+async function handleLiveStream(req, res) {
+  let closed = false;
+  let controller = null;
+  res.on("close", () => { closed = true; controller?.abort(); });
+  let headersSent = false;
+  let shortRuns = 0;
+
+  while (!closed) {
+    const started = Date.now();
+    controller = new AbortController();
+    try {
+      const channel = await resolveLiveChannel(shortRuns > 0);
+      const url = `${LIVE_SERVER}/live/${encodeURIComponent(LIVE_USER)}/${encodeURIComponent(LIVE_PASS)}/${channel.streamId}.ts`;
+      const upstream = await fetchFollow(url, controller.signal);
+      if (!upstream.ok) {
+        console.warn("[live] upstream status", upstream.status, "stream", channel.streamId, channel.name);
+        if (!headersSent) {
+          const limited = upstream.status === 509 || upstream.status === 429;
+          res.writeHead(limited ? 503 : 502, { ...cors, "content-type": "text/plain", "retry-after": "3", "cache-control": "no-store" });
+          return res.end(limited ? "Provider connection limit reached" : "Live channel is temporarily unavailable.");
+        }
+      } else {
+        if (!headersSent) {
+          res.writeHead(200, { ...cors, "content-type": "video/mp2t", "cache-control": "no-store" });
+          headersSent = true;
+        }
+        console.log("[live] upstream connected, stream", channel.streamId, channel.name);
+        for await (const chunk of upstream.body) {
+          if (closed) break;
+          if (!res.write(chunk)) await new Promise((resolve) => { res.once("drain", resolve); res.once("close", resolve); });
+        }
+      }
+    } catch (error) {
+      if (closed) break;
+      console.error("[live] upstream error", error);
+      if (!headersSent) {
+        res.writeHead(502, { ...cors, "content-type": "text/plain", "cache-control": "no-store" });
+        return res.end("Live channel is temporarily unavailable. Please try again in a moment.");
+      }
+    }
+    if (closed) break;
+    const lasted = Date.now() - started;
+    shortRuns = lasted < 10_000 ? shortRuns + 1 : 0;
+    console.warn(`[live] upstream ended after ${Math.round(lasted / 1000)}s, reconnecting (short runs: ${shortRuns})`);
+    if (shortRuns >= 8) { console.error("[live] giving up after repeated short connections"); break; }
+    await sleep(Math.min(1000 * (shortRuns + 1), 8000));
+  }
+  if (!res.writableEnded) res.end();
 }
 
 // --- 24/7 live channel page ---
 let liveCache = { at: 0, streamId: null, name: null };
 
-async function resolveLiveChannel() {
-  if (liveCache.streamId && Date.now() - liveCache.at < 10 * 60 * 1000) return liveCache;
+async function resolveLiveChannel(force = false) {
+  if (!force && liveCache.streamId && Date.now() - liveCache.at < 10 * 60 * 1000) return liveCache;
   const streams = await xtreamGet(LIVE_SERVER, LIVE_USER, LIVE_PASS, { action: "get_live_streams" });
-  const wanted = LIVE_CHANNEL.toLowerCase();
-  const match = streams.find((s) => String(s.name || "").toLowerCase().includes(wanted));
+  const wanted = LIVE_CHANNEL.trim().toLowerCase();
+  const nameOf = (s) => String(s.name || "").trim().toLowerCase();
+  // Prefer an exact name match; fall back to "contains" only if there is none.
+  const match = streams.find((s) => nameOf(s) === wanted) || streams.find((s) => nameOf(s).includes(wanted));
   if (!match) throw new Error("Channel not found");
+  const similar = streams.filter((s) => nameOf(s).includes(wanted)).map((s) => `${s.stream_id}:${s.name}`);
+  console.log("[live] picked", match.stream_id, match.name, "| similar names:", similar.join(" ; "));
   liveCache = { at: Date.now(), streamId: String(match.stream_id), name: String(match.name) };
   return liveCache;
 }
