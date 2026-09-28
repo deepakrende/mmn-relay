@@ -11,6 +11,7 @@ const LIVE_USER = process.env.LIVE_USER || "8506419545";
 const LIVE_PASS = process.env.LIVE_PASS || "9852600110";
 const LIVE_CHANNEL = process.env.LIVE_CHANNEL || "IND: TG: Maa HD";
 const LIVE_TITLE = process.env.LIVE_TITLE || "Maa HD Live";
+const TELEGRAM_URL = process.env.TELEGRAM_URL || "";
 const VIEWER_TTL_MS = 45_000;
 const viewers = new Map();
 
@@ -228,6 +229,9 @@ async function resolveLiveChannel() {
 }
 
 function livePage(streamUrl, title) {
+  const telegramButton = TELEGRAM_URL
+    ? `<a class="tg" href="${TELEGRAM_URL.replace(/"/g, "&quot;")}" target="_blank" rel="noopener noreferrer"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21.5 3.3 2.9 10.5c-1.3.5-1.3 1.2-.2 1.5l4.7 1.5 1.8 5.5c.2.6.1.8.7.8.5 0 .7-.2 1-.5l2.3-2.2 4.8 3.5c.9.5 1.5.2 1.7-.8l3.1-14.700c.3-1.300-.5-1.900-1.300-1.500ZM8.400 13.100l9.700-6.100c.5-.3.9-.1.5.2l-8.300 7.500-.3 3.600-1.600-5.200Z"/></svg>Join our Telegram</a>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -238,13 +242,17 @@ function livePage(streamUrl, title) {
   * { margin: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; }
   body { background: #000; color: #f5f5f7; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
-  header { position: fixed; z-index: 2; inset: 0 0 auto; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) 38px max(18px, env(safe-area-inset-left)); background: linear-gradient(to bottom, rgba(0,0,0,.78), transparent); pointer-events: none; }
+  header { position: fixed; z-index: 2; inset: 0 0 auto; display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: max(14px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right)) 38px max(18px, env(safe-area-inset-left)); background: linear-gradient(to bottom, rgba(0,0,0,.78), transparent); pointer-events: none; }
   .dot { width: 10px; height: 10px; border-radius: 50%; background: #e11d48; box-shadow: 0 0 10px #e11d48; animation: pulse 1.6s infinite; }
   @keyframes pulse { 50% { opacity: .4; } }
   .live-tag { font-size: 12px; font-weight: 700; letter-spacing: .14em; color: #e11d48; }
   h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: clamp(14px, 2vw, 20px); font-weight: 650; }
   .viewers { display: inline-flex; align-items: center; gap: 7px; min-width: 72px; justify-content: flex-end; font-size: 13px; font-weight: 650; color: rgba(255,255,255,.92); }
   .viewers svg { width: 18px; height: 18px; flex: none; }
+  .tg { pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; background: #229ed9; color: #fff; font-size: 13px; font-weight: 650; text-decoration: none; white-space: nowrap; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+  .tg:hover { background: #1b8cc2; }
+  .tg svg { width: 16px; height: 16px; flex: none; }
+  @media (max-width: 480px) { .tg { padding: 6px 10px; font-size: 12px; } }
   main, .stage { width: 100%; height: 100%; }
   .stage { position: relative; background: #000; overflow: hidden; }
   video { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -257,7 +265,7 @@ function livePage(streamUrl, title) {
 </style>
 </head>
 <body>
-<header><span class="dot"></span><span class="live-tag">LIVE</span><h1>${title}</h1><span class="viewers" aria-label="People watching"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span id="viewer-count">1</span></span></header>
+<header><span class="dot"></span><span class="live-tag">LIVE</span><h1>${title}</h1><span class="viewers" aria-label="People watching"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><span id="viewer-count">1</span></span>${telegramButton}</header>
 <main><div class="stage"><video id="v" controls autoplay muted playsinline></video></div></main>
 <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1/dist/mpegts.js"></script>
 <script>
